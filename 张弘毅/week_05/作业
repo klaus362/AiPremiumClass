@@ -1,0 +1,53 @@
+import os
+data_path = os.path.join(os.path.dirname(__file__), "doubanbook_top250_comments.txt")
+fixed_path = os.path.join(os.path.dirname(__file__), "douban_fixed.txt")
+
+# 修复后内容存盘文件
+fixed = open(fixed_path,"w",encoding = "utf-8")
+# #读取修复前内容
+lines = [line for line in open(data_path,"r",encoding = "utf-8")]
+# print(len(lines))
+for i, line in enumerate(lines):
+    #保存标题列
+    if i == 0:
+        fixed.write(line)
+        prev_line ="" #上一行的书名置为空
+        continue
+    # 提取书名和评论文本
+    terms = line.split("\t")
+    #当前行的书名==上一行的书名
+    if terms[0] == prev_line.split("\t")[0]:
+        #保存上一行记录
+        fixed.write(prev_line +"\n")
+        prev_line = line.strip() #保存当前行
+    else:
+        if len(terms) == 6: #如果书名是一本新书
+            fixed.write(line)
+            prev_line = line.strip() #保存当前行
+        else:
+            prev_line += line.strip() #同一类书籍书名不一致，合并上一行
+fixed.close()
+
+# 这样就行了 
+#搭建推荐系统
+import csv
+import jieba
+def load_data(file_path):   
+    # 图书评论信息集合
+    book_comments = {} #{书名：评论1+评论2等}
+    with open(fixed_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f, delimiter="\t") # 设别格式文档标题列
+        for item in reader:
+            book = item['book']
+            comment = item['body']
+            comment_words = jieba.lcut(comment) #分词
+            book_comments[book] = book_comments.get(book, "") + " " + " ".join(comment_words) # 合并评论
+            book_comments[book].extend(comment_words) # 合并评论
+    return book_comments
+if __name__ == '__main__':
+    book_comments = load_data(fixed_path)
+    print(book_comments)
+
+
+
+    
