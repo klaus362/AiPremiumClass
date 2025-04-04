@@ -1,0 +1,125 @@
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, GRU, SimpleRNN, Bidirectional
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import os
+
+# 获取并加载数据集
+url = "URL_ADDRESS"
+data = pd.read_csv(url)
+
+# 数据预处理
+data['date'] = pd.to_datetime(data['date'])
+data.set_index('date', inplace=True)
+data.sort_index(inplace=True)
+
+# 只选择最高气温列
+data = data[['high']]
+
+# 数据归一化
+scaler = MinMaxScaler(feature_range=(0, 1))
+data_scaled = scaler.fit_transform(data)
+
+# 创建序列数据集
+def create_sequences(data, seq_length):
+    xs, ys = [], []
+    for i in range(len(data) - seq_length):
+        x = data[i:(i + seq_length)]
+        y = data[i + seq_length][0]  # 预测1天后的最高气温
+        ys.append(y)
+        xs.append(x)
+    return np.array(xs), np.array(ys)
+
+seq_length = 10  # 序列长度
+xs, ys = create_sequences(data_scaled, seq_length)
+
+# 分割数据集为训练集和测试集
+x_train, x_test, y_train, y_test = train_test_split(xs, ys, test_size=0.2, random_state=42)
+
+# 转换为适合RNN输入的格式 (samples, time steps, features)
+x_train = x_train.reshape((x_train.shape[0], x_train.shape[1], 1))
+x_test = x_test.reshape((x_test.shape[0], x_test.shape[1], 1))
+
+# 构建RNN模型
+def build_model(input_shape, model_type):
+    model = Sequential()
+    if model_type == 'LSTM':
+        model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+        model.add(LSTM(50))
+    elif model_type == 'RNN':
+        model.add(SimpleRNN(50, return_sequences=True, input_shape=input_shape))
+        model.add(SimpleRNN(50))
+    elif model_type == 'BiRNN':
+        model.add(Bidirectional(SimpleRNN(50, return_sequences=True), input_shape=input_shape))
+        model.add(Bidirectional(SimpleRNN(50)))
+    else:
+        raise ValueError('Unknown model type')
+    
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+# 使用TensorBoard
+log_dir = 'logs/weather_prediction'
+tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+
+# 训练RNN模型
+model_rnn = build_model(input_shape=(seq_length, 1), model_type='RNN')
+model_rnn.fit(x_train, y_train, epochs=50, batch_size=32, validation_data=(x_test, y_test), callbacks=[tensorboard_callback])
+
+# 训练LSTM模型
+model_lstm = build_model(input_shape=(seq_length, 1), model_type='LSTM')
+model_lstm.fit(x_train, y_train, epochs=50, batch_size=32, validation_data=(x_test, y_test), callbacks=[tensorboard_callback])
+
+# 训练BiRNN模型
+model_birnn = build_model(input_shape=(seq_length, 1), model_type='BiRNN')
+model_birnn.fit(x_train, y_train, epochs=50, batch_size=32, validation_data=(x_test, y_test), callbacks=[tensorboard_callback])
+
+# 使用模型进行预测
+def predict_future(model, input_data, days=1):
+    predictions = []
+    current_input = input_data
+    for _ in range(days):
+        prediction = model.predict(current_input)
+        predictions.append(prediction)
+        # 将预测值添加到输入序列
+        current_input = np.append(current_input[:, 1:, :], np.array(prediction).reshape(1, 1, 1), axis=1)
+    return np.array(predictions)
+
+# 预测1天后的气温
+predictions_rnn_1day = predict_future(model_rnn, x_test[0].reshape(1, seq_length, 1))
+predictions_lstm_1day = predict_future(model_lstm, x_test[0].reshape(1, seq_length, 1))
+predictions_birnn_1day = predict_future(model_birnn, x_test[0].reshape(1, seq_length, 1))
+
+# 预测5天后的气温
+predictions_rnn_5day = predict_future(model_rnn, x_test[0].reshape(1, seq_length, 1), days=5)
+predictions_lstm_5day = predict_future(model_lstm, x_test[0].reshape(1, seq_length, 1), days=5)
+predictions_birnn_5day = predict_future(model_birnn, x_test[0].reshape(1, seq_length, 1), days=5)
+
+# 可视化预测结果
+def plot_predictions(predictions, actual, title):
+    plt.figure(figsize=(10, 6))
+    plt.plot(actual, label='Actual')
+    for i, pred in enumerate(predictions):
+        plt.plot(pred.reshape(-1), label=f'Predicted day {i+1}')
+    plt.title(title)
+    plt.xlabel('Days')
+    plt.ylabel('Temperature')
+    plt.legend()
+    plt.show()
+
+# 取出第一个测试样本的实际气温
+actual = scaler.inverse_transform(y_test[0].reshape(1, -1)).flatten()
+
+# 预测结果可视化
+plot_predictions([predictions_rnn_1day], actual, 'RNN 1 Day Prediction')
+plot_predictions([predictions_lstm_1day], actual, 'LSTM 1 Day Prediction')
+plot_predictions([predictions_birnn_1day], actual, 'BiRNN 1 Day Prediction')
+plot_predictions([predictions_rnn_5day], actual, 'RNN 5 Day Prediction')
+plot_predictions([predictions_lstm_5day], actual, 'LSTM 5 Day Prediction')
+plot_predictions([predictions_birnn_5day], actual, 'BiRNN 5 Day Prediction')
+
