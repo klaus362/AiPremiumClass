@@ -1,0 +1,151 @@
+import pandas as pd
+import numpy as np
+import re
+from collections import Counter
+import pickle
+import tensorflow as tf
+from tensorflow.keras import layers, Model, Sequential
+import tensorflow.keras.backend as K
+from transformers import *
+import wandb
+import os
+
+# 加载豆瓣电影评论数据
+data = pd.read_csv('douban_movies_short_comments.csv')
+
+# 定义标签
+data['label'] = np.where(data['score'] <= 2, 1, np.where(data['score'] >= 4, 0, -1))
+
+# 去除中性评论
+data = data[data['label'] != -1]
+
+# 定义分词方法
+def jieba_tokenizer(texts):
+    tokenized_texts = []
+    for text in texts:
+        tokens = jieba.cut_for_search(text)
+        tokenized_text = ' '.join(tokens)
+        tokenized_texts.append(tokenized_text)
+    return tokenized_texts
+
+# 使用jieba进行分词，构建词典
+def build_word_dict(texts, max_words=5000):
+    word_counts = Counter()
+    for text in texts:
+        for word in jieba.cut(text):
+            word_counts[word] += 1
+    word_list = [
+        word for word, count in word_counts.most_common(max_words)
+    ]
+    word_dict = {word: i for i, word in enumerate(word_list)}
+    return word_dict
+
+# 构建词表
+vocab = build_word_dict(data['comment'])
+
+# 保存词表
+with open('word_dict.pkl', 'wb') as f:
+    pickle.dump(vocab, f)
+
+# 分词并将评论转换为索引
+def preprocess_comment(texts, vocab):
+    tokenized_texts = jieba_tokenizer(texts)
+    return [' '.join(tokens) for tokens in tokenized_texts]
+
+# 使用预定义的词表进行映射
+def comment_to_index(texts, vocab):
+    indices = []
+    for text in texts:
+        tokens = text.split()
+        indices.append([vocab.get(token, 0) for token in tokens])
+    return indices
+
+# 将评论转换为索引
+data['tokenized'] = preprocess_comment(data['comment'], vocab)
+data['indices'] = comment_to_index(data['comment'], vocab)
+
+# 定义RNN模型
+class TextRNN Classifier(Model):
+    def __init__(self, vocab_size, max_sequence_length, embedding_dim=100, rnn_units=128, num_classes=2):
+        super(TextRNNClassifier, self).__init__()
+        self embedding = Embedding(vocab_size, embedding_dim)
+        self gru = GRU(embedding_dim, rnn_units, return_sequences=True)
+        self dense = Dense(rnn_units, activation='relu')
+        self output = Dense(num_classes, activation='sigmoid')
+    
+    def call(self, inputs):
+        #输入是批量样本，每个样本是一个长短语序列（token indexes）
+        #（B, T），其中T是最长场景长度
+        with tf.name_scope('input'):
+            inputs = tf.keras.Input(shape=(None, None))  # 根据需要调整
+            x = self.embedding(inputs)  # 获取嵌入表示
+            x = self.gru(x)  # 进行RNN循环
+            x = self.dense(x)  # 全连接层
+            x = self.output(x)  # 输出层
+            return x
+
+# 初始化模型
+model = TextRNNClassifier(
+    vocab_size=len(vocab),
+    max_sequence_length=max(data['indices'].shape[1], default=200),
+    embedding_dim=128,
+    rnn_units=256,
+    num_classes=2
+)
+
+# 定义损失函数和优化器
+model.compile(loss='binary_crossentropy',
+             optimizer='adam',
+             metrics=['accuracy'])
+
+# 使用TensorBoard进行可视化和记录
+board = tf.keras.callbacks.TensorBoard(
+    log_dir=os.path.join('logs', 'rnn_text_classification'),
+    histogram_freq=1,
+    attacked='line',
+    max_threshold=1e-6,
+    iteration_writer=True,
+    embed_graph=False,
+    compute_rn=True,
+)
+
+# 模型训练
+history = model.fit(
+    x=data['indices'],
+    y=data['label'],
+    batch_size=32,
+    epochs=10,
+    validation_split=0.2,
+    shuffle=True,
+    callbacks=[board],
+)
+
+# 训练结果可视化
+with wandb.init(
+    name='豆瓣电影评论分类',
+    entity='your_name',
+    project='movie评论分类'
+) as wandb:
+    wandb.watch(model, logs='loss', values='val'  # 仅记录验证集损失
+    # 训练完成后，加载预处理后的数据，评估模型性能
+    test_indices = data['indices'].values[-1000:]  # 随机取1000个测试用例
+    test_labels = data['label'].values[-1000:]
+
+    # 使用模型预测测试集
+    predicted_labels = model.predict(test_indices)
+    test_loss = np.sum(np.where(predicted_labels >= 0.5, 1, 0) * test_labels)
+    test_accuracy = np.mean(np.argmax(predicted_labels, 1) == test_labels)
+    print(f"Validation Loss: {test_loss / 1000}")
+    print(f"Validation Accuracy: {test_accuracy}")
+
+# 保存模型和词表
+model.save_weights('doubanrnn_model.hdf5')
+with open('word_dict.pkl', 'wb') as f:
+    pickle.dump(vocab, f)
+
+# deployed结果保存
+cols = ['评论'] + list(vocab.keys())[:100]
+test_comments = data['comment'].iloc[:500]
+test_labels = model.predict(data['indices'].iloc[:500])
+df = pd.DataFrame({'评论': test_comments, '预测标签': test_labels})
+df.to_csv('deployment_results.csv', index=False)
